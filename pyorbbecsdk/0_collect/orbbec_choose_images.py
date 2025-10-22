@@ -31,23 +31,6 @@ MIN_DEPTH = 0.02  # 0.02m (20mm)
 MAX_DEPTH = 10.0  # 10.0m (10000mm)
 PRINT_INTERVAL = 1  # seconds
 
-
-class TemporalFilter:
-    """时间滤波器，用于平滑深度数据"""
-
-    def __init__(self, alpha=0.5):
-        self.alpha = alpha
-        self.previous_frame = None
-
-    def process(self, frame):
-        if self.previous_frame is None:
-            result = frame
-        else:
-            result = cv2.addWeighted(frame, self.alpha, self.previous_frame, 1 - self.alpha, 0)
-        self.previous_frame = result
-        return result
-
-
 def parse_arguments():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='奥比中光相机数据采集脚本')
@@ -57,6 +40,8 @@ def parse_arguments():
                         help='图像宽度 (默认: 640)')
     parser.add_argument('--height', type=int, default=480,
                         help='图像高度 (默认: 480)')
+    parser.add_argument('--depth_width', type=int, default=768,help='深度图像宽度 (默认: 768)')
+    parser.add_argument('--depth_height', type=int, default=480,help='深度图像高度 (默认: 480)')
     parser.add_argument('--fps', type=int, default=30,
                         help='帧率 (默认: 30)')
 
@@ -74,19 +59,18 @@ def parse_arguments():
     parser.add_argument('--disable-align', dest='enable_align', action='store_false',
                         help='禁用深度对齐')
 
-    # 时间滤波器参数
-    parser.add_argument('--temporal-alpha', type=float, default=0.5,
-                        help='时间滤波器Alpha值 (默认: 0.5)')
 
     return parser.parse_args()
 
 
-def setup_pipeline(width, height, fps, enable_sync=True, enable_align=True):
+def setup_pipeline(width, height, depth_width, depth_height, fps, enable_sync=True, enable_align=True):
     """设置奥比中光相机管道，参考官方示例的最佳实践"""
     pipeline = Pipeline()
     config = Config()
 
-    print(f"配置参数: 分辨率 {width}x{height}@{fps}fps")
+    print(f"配置参数:")
+    print(f"  彩色流分辨率: {width}x{height}@{fps}fps")
+    print(f"  深度流分辨率: {depth_width}x{depth_height}@{fps}fps")
 
     try:
         # 配置彩色流（参考color.py）
@@ -128,11 +112,11 @@ def setup_pipeline(width, height, fps, enable_sync=True, enable_align=True):
 
         depth_profile = None
         try:
-            # 尝试用户指定的分辨率和帧率
-            depth_profile = depth_profile_list.get_video_stream_profile(width, height, OBFormat.Y16, fps)
-            print(f"✓ 深度流: {width}x{height}@{fps}fps")
+            # 尝试用户指定的深度分辨率和帧率
+            depth_profile = depth_profile_list.get_video_stream_profile(depth_width, depth_height, OBFormat.Y16, fps)
+            print(f"✓ 深度流: {depth_width}x{depth_height}@{fps}fps")
         except OBError as e:
-            print(f"深度流 {width}x{height}@{fps}fps 配置失败: {e}")
+            print(f"深度流 {depth_width}x{depth_height}@{fps}fps 配置失败: {e}")
             # 使用默认配置
             depth_profile = depth_profile_list.get_default_video_stream_profile()
 
@@ -226,7 +210,7 @@ def create_combined_view(color_image, depth_colormap):
     return combined
 
 
-def process_frames(color_frame, depth_frame, align_filter, temporal_filter):
+def process_frames(color_frame, depth_frame, align_filter):
     """处理彩色帧和深度帧，参考官方示例的处理方式"""
     global current_depth_data, current_color_image, current_depth_colormap
 
@@ -261,18 +245,13 @@ def process_frames(color_frame, depth_frame, align_filter, temporal_filter):
         depth_data_mm = np.where((depth_data_mm > MIN_DEPTH * 1000) & (depth_data_mm < MAX_DEPTH * 1000), depth_data_mm,
                                  0)
 
-        # 应用时间滤波（参考depth.py，使用毫米数据）
-        # if temporal_filter:
-        #     depth_data_mm = temporal_filter.process(depth_data_mm.astype(np.uint16))
-        #     depth_data_mm = depth_data_mm.astype(np.float32)
-
         # 毫米单位用于可视化和交互
         current_depth_data = depth_data_mm  # 全局变量保存毫米单位用于点击交互
 
         # 创建深度可视化图像（使用毫米数据）
         depth_image = cv2.normalize(depth_data_mm, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
         depth_colormap = cv2.applyColorMap(depth_image, cv2.COLORMAP_JET)
-        depth_data_mm = np.where((depth_data_mm > 300) & (depth_data_mm < 5000), depth_data_mm, 0).astype(np.uint16)
+        # depth_data_mm = np.where((depth_data_mm > 300) & (depth_data_mm < 5000), depth_data_mm, 0).astype(np.uint16)
         current_depth_colormap = depth_colormap
 
         # 转换为米单位用于保存
@@ -321,11 +300,11 @@ def main():
 
     print("=== 奥比中光相机数据采集程序（可配置版） ===")
     print(f"配置信息:")
-    print(f"  - 分辨率: {args.width}x{args.height}@{args.fps}fps")
+    print(f"  - 彩色图分辨率: {args.width}x{args.height}@{args.fps}fps")
+    print(f"  - 深度图分辨率: {args.depth_width}x{args.depth_height}@{args.fps}fps")
     print(f"  - 保存目录: {args.output_dir}")
     print(f"  - 帧同步: {'启用' if args.enable_sync else '禁用'}")
     print(f"  - 深度对齐: {'启用' if args.enable_align else '禁用'}")
-    print(f"  - 时间滤波Alpha: {args.temporal_alpha}")
 
     # 创建输出文件夹
     output_dir = args.output_dir
@@ -337,15 +316,13 @@ def main():
 
     # 设置pipeline
     pipeline, config, align_filter = setup_pipeline(
-        args.width, args.height, args.fps,
+        args.width, args.height, args.depth_width, args.depth_height, args.fps,
         args.enable_sync, args.enable_align
     )
     if pipeline is None:
         print("✗ 初始化相机失败")
         return
 
-    # 创建时间滤波器
-    temporal_filter = TemporalFilter(alpha=args.temporal_alpha)
 
     # 获取相机内参
     color_K, depth_K = get_camera_intrinsics(pipeline)
@@ -398,7 +375,7 @@ def main():
 
                 # 处理帧数据
                 color_image, depth_data, depth_colormap = process_frames(
-                    color_frame, depth_frame, align_filter, temporal_filter)
+                    color_frame, depth_frame, align_filter)
 
                 if color_image is None:
                     continue
